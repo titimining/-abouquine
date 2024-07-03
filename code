@@ -1,0 +1,219 @@
+import pandas as pd
+import folium
+from folium.plugins import MarkerCluster, Search
+from folium import IFrame
+from geopy.geocoders import Nominatim
+from geopy.distance import geodesic
+from geopy.exc import GeocoderTimedOut
+import io
+import os
+import re
+import urllib.parse
+import random
+
+hackathon_dir = os.path.expanduser('~/Hackathon')
+
+csv_path = os.path.join(hackathon_dir, 'adresses-des-bibliotheques-publiques.csv')
+
+# Charger les données du CSV
+df = pd.read_csv(csv_path, sep=';')
+
+# Vérifier que les données sont correctement chargées
+print(df.head())
+print(f"Nombre total de bibliothèques dans le CSV : {len(df)}")
+
+# Vérifier les noms des colonnes
+print(df.columns)
+
+def get_location_from_address(address):
+    geolocator = Nominatim(user_agent="my_app")
+    try:
+        location = geolocator.geocode(address)
+        if location:
+            return location.latitude, location.longitude
+        else:
+            print("Adresse non trouvée. Veuillez essayer une adresse plus précise.")
+            return None
+    except GeocoderTimedOut:
+        print("Le service de géocodage a expiré. Veuillez réessayer.")
+        return None
+
+def extract_coordinates_from_maps_url(url):
+    # Extraire les coordonnées d'un lien Google Maps
+    pattern = r'@(-?\d+\.\d+),(-?\d+\.\d+)'
+    match = re.search(pattern, url)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    else:
+        return None
+
+def get_location_from_input(user_input):
+    if user_input.startswith(('http://', 'https://')):
+        # C'est un lien Google Maps
+        coords = extract_coordinates_from_maps_url(user_input)
+        if coords:
+            return coords
+        else:
+            print("Impossible d'extraire les coordonnées du lien Google Maps.")
+            return None
+    else:
+        # C'est une adresse normale
+        return get_location_from_address(user_input)
+
+def generate_random_review():
+    rating = random.uniform(3, 5)
+    reviews = [
+        "Excellente bibliothèque avec une grande variété de livres.",
+        "Personnel très accueillant et serviable.",
+        "Ambiance calme et propice à l'étude.",
+        "Bonne sélection de livres, mais pourrait être plus diversifiée.",
+        "Espace confortable pour la lecture et le travail.",
+        "Horaires d'ouverture pratiques.",
+        "Manque un peu d'espace aux heures de pointe.",
+        "Très bonne organisation et facilité à trouver les livres.",
+        "Pourrait bénéficier de plus d'événements littéraires.",
+        "Excellente ressource pour la communauté locale."
+    ]
+    review_text = random.choice(reviews)
+    return f"{rating:.1f}/5 - {review_text}"
+
+def generate_random_book_list():
+    books = [
+        "1984 - George Orwell",
+        "Le Petit Prince - Antoine de Saint-Exupéry",
+        "Harry Potter à l'école des sorciers - J.K. Rowling",
+        "L'Étranger - Albert Camus",
+        "Les Misérables - Victor Hugo",
+        "Le Comte de Monte-Cristo - Alexandre Dumas",
+        "Madame Bovary - Gustave Flaubert",
+        "Notre-Dame de Paris - Victor Hugo",
+        "Le Rouge et le Noir - Stendhal",
+        "Germinal - Émile Zola",
+        "La Peste - Albert Camus",
+        "Voyage au bout de la nuit - Louis-Ferdinand Céline",
+        "Les Fleurs du mal - Charles Baudelaire",
+        "Candide - Voltaire",
+        "Le Grand Meaulnes - Alain-Fournier"
+    ]
+    
+    num_books = random.randint(5, 10)  # Chaque bibliothèque aura entre 5 et 10 livres
+    selected_books = random.sample(books, num_books)
+    
+    book_list = []
+    for book in selected_books:
+        status = "Disponible" if random.random() > 0.3 else "Indisponible"
+        book_list.append(f"{book} - {status}")
+    
+    return book_list
+
+def find_nearby_libraries(user_input):
+    geolocator = Nominatim(user_agent="my_app")
+    try:
+        user_location = get_location_from_input(user_input)
+        if user_location:
+            user_map = folium.Map(location=user_location, zoom_start=14)
+            
+            # Déterminer la région et le rayon approprié
+            location_info = geolocator.reverse(user_location)
+            region = location_info.raw['address'].get('state', '')
+            radius_km = 1 if region == "Île-de-France" else 5
+            
+            # Ajouter un marqueur pour la position de l'utilisateur
+            folium.Marker(
+                location=user_location,
+                popup="Votre position",
+                icon=folium.Icon(color='blue', icon='user', prefix='fa')
+            ).add_to(user_map)
+            
+            # Ajouter un cercle pour représenter le rayon
+            folium.Circle(
+                location=user_location,
+                radius=radius_km * 1000,
+                color="blue",
+                fill=True,
+                fillColor="blue",
+                fillOpacity=0.1
+            ).add_to(user_map)
+            
+            # Créer un groupe de marqueurs pour les bibliothèques
+            libraries_group = folium.FeatureGroup(name='Bibliothèques')
+            
+            # Créer un cluster pour le groupe
+            libraries_cluster = MarkerCluster().add_to(libraries_group)
+            
+            for _, row in df.iterrows():
+                if pd.notna(row['latitude']) and pd.notna(row['longitude']):
+                    lib_location = (row['latitude'], row['longitude'])
+                    distance = geodesic(user_location, lib_location).km
+                    if distance <= radius_km:
+                        # Vérifier si la bibliothèque est en Île-de-France
+                        if row['ville'].lower() in ['paris', 'versailles', 'nanterre', 'créteil', 'bobigny', 'melun', 'évry', 'cergy']:
+                            book_list = generate_random_book_list()
+                            book_list_html = "<br>".join(book_list)
+                        else:
+                            book_list_html = "Liste de livres non disponible pour cette région"
+                        
+                        # Générer un avis aléatoire
+                        review = generate_random_review()
+                        
+                        # Créer un popup personnalisé avec du HTML et du CSS
+                        popup_content = f"""
+                        <div style="font-family: Arial, sans-serif; max-width: 300px;">
+                            <h3 style="color: #2c3e50;">{row['nom_de_l_etablissement']}</h3>
+                            <p><strong>Adresse:</strong> {row['adresse']}, {row['ville']}</p>
+                            <p><strong>Distance:</strong> {distance:.2f} km</p>
+                            <p><strong>Horaires:</strong> 9h - 18h</p>
+                            <p><strong>Avis:</strong> {review}</p>
+                            <p><strong>Livres:</strong><br>{book_list_html}</p>
+                        </div>
+                        """
+                        iframe = IFrame(html=popup_content, width=320, height=400)
+                        popup = folium.Popup(iframe, max_width=350)
+                        
+                        folium.Marker(
+                            location=lib_location,
+                            popup=popup,
+                            tooltip=row['nom_de_l_etablissement'],
+                            icon=folium.Icon(color='green', icon='book', prefix='fa')
+                        ).add_to(libraries_cluster)
+            
+            # Ajouter le groupe à la carte
+            libraries_group.add_to(user_map)
+            
+            # Ajouter un contrôle de couches
+            folium.LayerControl().add_to(user_map)
+            
+            # Ajouter une légende
+            legend_html = '''
+                <div style="position: fixed; bottom: 50px; left: 50px; width: 220px; height: 60px; 
+                            border:2px solid grey; z-index:9999; font-size:14px; background-color:white;
+                            ">&nbsp; Légende <br>
+                    &nbsp; <i class="fa fa-map-marker fa-2x" style="color:green"></i> Bibliothèques
+                </div>
+                '''
+            user_map.get_root().html.add_child(folium.Element(legend_html))
+            
+            # Ajouter une barre de recherche
+            Search(
+                layer=libraries_group,
+                geom_type="Point",
+                placeholder="Rechercher une bibliothèque",
+                collapsed=False,
+                search_label="nom_de_l_etablissement",
+            ).add_to(user_map)
+            
+            return user_map
+    except Exception as e:
+        print(f"Une erreur s'est produite : {e}")
+    return None
+
+# Utilisation
+user_input = input("Entrez une adresse précise ou collez un lien Google Maps : ")
+result_map = find_nearby_libraries(user_input)
+if result_map:
+    # Sauvegarder la carte dans le dossier 'hackathon'
+    map_path = os.path.join(hackathon_dir, "bibliotheques_proches.html")
+    result_map.save(map_path)
+    print(f"Carte sauvegardée dans {map_path}")
+else:
+    print("Impossible de générer la carte.")
